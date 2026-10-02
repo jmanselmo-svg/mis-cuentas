@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const CLAVE = 'mis-cuentas:v1';
 
 const CATEGORIAS_BASE = {
@@ -42,7 +42,6 @@ const fmtDecimal = new Intl.NumberFormat('es-AR', {
 });
 const moneda = (n) => (Number.isInteger(redondear(n)) ? fmtEntero : fmtDecimal).format(redondear(n));
 const monedaRedonda = (n) => fmtEntero.format(Math.round(n));
-const fmtNumero = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 2 });
 
 /* ---------- Datos ---------- */
 
@@ -208,8 +207,93 @@ function parsearMonto(texto) {
   if (!s) return Number.NaN;
   if (s.includes(',')) s = s.replace(/\./g, '').replace(',', '.');
   else if (/^\d{1,3}(\.\d{3})+$/.test(s)) s = s.replace(/\./g, '');
+  s = s.replace(/\.$/, '');
   if (!/^\d+(\.\d+)?$/.test(s)) return Number.NaN;
   return redondear(Number(s));
+}
+
+const agruparMiles = (digitos) => digitos.replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+function textoMonto(n) {
+  const [entero, decimales] = redondear(n).toFixed(2).split('.');
+  return agruparMiles(entero) + (decimales === '00' ? '' : `,${decimales.replace(/0$/, '')}`);
+}
+
+// Los puntos de miles los pone la app: cualquier punto o coma que se tipee es la coma decimal.
+function formatearAlEscribir(input) {
+  let anterior = input.value;
+  input.addEventListener('focus', () => {
+    anterior = input.value;
+  });
+  input.addEventListener('beforeinput', () => {
+    anterior = input.value;
+  });
+  input.addEventListener('input', (e) => {
+    let valor = input.value;
+    let cursor = input.selectionStart ?? valor.length;
+    let separadorTipeado = -1;
+
+    if (e.inputType === 'insertFromPaste' && parsearMonto(valor) > 0) {
+      valor = textoMonto(parsearMonto(valor));
+      cursor = valor.length;
+    } else if (
+      valor.length === anterior.length + 1 &&
+      /[.,]/.test(valor[cursor - 1]) &&
+      valor.slice(0, cursor - 1) + valor.slice(cursor) === anterior
+    ) {
+      if (anterior.includes(',')) {
+        valor = anterior;
+        cursor -= 1;
+      } else {
+        separadorTipeado = cursor - 1;
+      }
+    } else if (
+      valor.length === anterior.length - 1 &&
+      anterior[cursor] === '.' &&
+      anterior.slice(0, cursor) + anterior.slice(cursor + 1) === valor
+    ) {
+      // Borrar un punto de miles borra el dígito de al lado; si no, el punto vuelve a aparecer.
+      if (e.inputType === 'deleteContentForward') {
+        valor = valor.slice(0, cursor) + valor.slice(cursor + 1);
+      } else {
+        valor = valor.slice(0, cursor - 1) + valor.slice(cursor);
+        cursor -= 1;
+      }
+    }
+
+    let entero = '';
+    let decimales = null;
+    let significativos = 0;
+    for (let i = 0; i < valor.length; i++) {
+      const c = valor[i];
+      const esDigito = c >= '0' && c <= '9';
+      const esDecimal = !esDigito && decimales === null && (c === ',' || i === separadorTipeado);
+      if (esDigito && decimales === null) entero += c;
+      else if (esDigito) decimales += c;
+      else if (esDecimal) decimales = '';
+      if (i < cursor && (esDigito || esDecimal)) significativos += 1;
+    }
+
+    const sinCeros = entero.replace(/^0+(?=\d)/, '').slice(0, 12);
+    significativos -= Math.min(entero.length - sinCeros.length, significativos);
+    entero = sinCeros;
+    if (decimales !== null) {
+      decimales = decimales.slice(0, 2);
+      if (!entero) {
+        entero = '0';
+        if (significativos > 0) significativos += 1;
+      }
+    }
+
+    const texto = agruparMiles(entero) + (decimales === null ? '' : `,${decimales}`);
+    let pos = 0;
+    for (let cuenta = 0; pos < texto.length && cuenta < significativos; pos += 1) {
+      if (texto[pos] !== '.') cuenta += 1;
+    }
+    input.value = texto;
+    input.setSelectionRange(pos, pos);
+    anterior = texto;
+  });
 }
 
 function partirCategoria(cat) {
@@ -521,7 +605,7 @@ function abrirMovimiento(id) {
   formMov.categoria = m?.categoria ?? null;
 
   $('#mov-titulo').textContent = m ? 'Editar movimiento' : 'Nuevo movimiento';
-  $('#mov-monto').value = m ? fmtNumero.format(m.monto) : '';
+  $('#mov-monto').value = m ? textoMonto(m.monto) : '';
   $('#mov-fecha').value = m?.fecha ?? (ui.mes === mesActual() ? hoyISO() : `${ui.mes}-01`);
   $('#mov-nota').value = m?.nota ?? '';
   $('#mov-fijo').checked = Boolean(m?.fijo);
@@ -683,7 +767,7 @@ function abrirAjustes() {
 
 function pintarSaldoInicial(estado = '') {
   const si = datos.saldoInicial;
-  $('#aj-saldo').value = si ? fmtNumero.format(si.monto) : '';
+  $('#aj-saldo').value = si ? textoMonto(si.monto) : '';
   $('#aj-saldo-mes').value = si?.mes ?? ui.mes;
   $('#aj-saldo-estado').textContent = estado;
 }
@@ -1012,6 +1096,8 @@ document.querySelector('main').addEventListener('click', (e) => {
 
 /* ---------- Arranque ---------- */
 
+formatearAlEscribir($('#mov-monto'));
+formatearAlEscribir($('#aj-saldo'));
 render();
 
 navigator.storage?.persist?.().catch(() => {});
