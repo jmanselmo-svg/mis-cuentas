@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="es-AR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Mis Cuentas</title>
+  <meta name="description" content="Registro personal de ingresos y gastos">
+  <meta name="theme-color" content="#0f766e" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#0e1013" media="(prefers-color-scheme: dark)">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Mis Cuentas">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="barra">
+    <button type="button" class="icono" id="mes-ant" aria-label="Mes anterior">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>
+    </button>
+    <button type="button" class="mes" id="mes-titulo" aria-label="Volver al mes actual"></button>
+    <button type="button" class="icono" id="mes-sig" aria-label="Mes siguiente">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7"/></svg>
+    </button>
+    <button type="button" class="icono ajustes" id="btn-ajustes" aria-label="Ajustes y copia de seguridad">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/></svg>
+    </button>
+  </header>
+
+  <main>
+    <section class="tarjeta resumen" id="resumen" aria-live="polite"></section>
+    <div id="avisos"></div>
+    <nav class="pestanias" role="tablist" aria-label="Vistas">
+      <button type="button" role="tab" data-tab="movimientos">Movimientos</button>
+      <button type="button" role="tab" data-tab="categorias">Categorías</button>
+      <button type="button" role="tab" data-tab="meses">Meses</button>
+    </nav>
+    <section id="vista"></section>
+  </main>
+
+  <button type="button" class="fab" id="btn-nuevo" aria-label="Agregar movimiento">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+  </button>
+
+  <dialog id="hoja-mov" class="hoja" aria-labelledby="mov-titulo">
+    <form id="form-mov" class="hoja-cuerpo" novalidate>
+      <div class="hoja-asa" aria-hidden="true"></div>
+      <h2 id="mov-titulo">Nuevo movimiento</h2>
+
+      <div class="segmento" role="radiogroup" aria-label="Tipo de movimiento" id="mov-tipo">
+        <button type="button" role="radio" data-tipo="gasto">Gasto</button>
+        <button type="button" role="radio" data-tipo="ingreso">Ingreso</button>
+      </div>
+
+      <div class="campo">
+        <label for="mov-monto">Monto</label>
+        <div class="monto-input">
+          <span aria-hidden="true">$</span>
+          <input id="mov-monto" inputmode="decimal" autocomplete="off" placeholder="0" enterkeyhint="done">
+        </div>
+      </div>
+
+      <fieldset class="campo">
+        <legend>Categoría</legend>
+        <div id="mov-cats" class="chips" role="radiogroup" aria-label="Categoría"></div>
+      </fieldset>
+
+      <div class="campo">
+        <label for="mov-fecha">Fecha</label>
+        <input type="date" id="mov-fecha" required>
+      </div>
+
+      <div class="campo">
+        <label for="mov-nota">Descripción <em>(opcional)</em></label>
+        <input id="mov-nota" maxlength="80" autocomplete="off" placeholder="Ej: Coto, luz de octubre…">
+      </div>
+
+      <label class="check">
+        <input type="checkbox" id="mov-fijo">
+        <span><strong>Se repite todos los meses</strong><small>Alquiler, sueldo, servicios, cuotas…</small></span>
+      </label>
+
+      <p id="mov-error" class="error" role="alert"></p>
+
+      <div class="acciones">
+        <button type="button" id="mov-eliminar" class="btn peligro">Eliminar</button>
+        <span class="espacio"></span>
+        <button type="button" class="btn" data-cerrar>Cancelar</button>
+        <button type="submit" class="btn primario">Guardar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="hoja-ajustes" class="hoja" aria-labelledby="aj-titulo">
+    <div class="hoja-cuerpo">
+      <div class="hoja-asa" aria-hidden="true"></div>
+      <div class="hoja-cabecera">
+        <h2 id="aj-titulo">Ajustes</h2>
+        <button type="button" class="icono" data-cerrar aria-label="Cerrar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+
+      <section class="bloque" id="aj-instalar">
+        <h3>Instalar en el celular</h3>
+        <p class="ayuda" id="aj-instalar-texto"></p>
+        <button type="button" id="aj-instalar-btn" class="btn primario" hidden>Instalar Mis Cuentas</button>
+      </section>
+
+      <section class="bloque">
+        <h3>Copia de seguridad</h3>
+        <p class="ayuda">Tus datos se guardan solo en este celular. Exportá una copia cada tanto (mandátela por WhatsApp o guardala en Drive) para no perderlos si cambiás de teléfono o borrás los datos del navegador.</p>
+        <p class="ayuda" id="aj-ultima-copia"></p>
+        <div class="botonera">
+          <button type="button" id="aj-exportar" class="btn primario">Exportar copia</button>
+          <button type="button" id="aj-importar" class="btn">Importar copia</button>
+        </div>
+        <input type="file" id="aj-archivo" accept=".json,application/json" hidden>
+      </section>
+
+      <section class="bloque">
+        <h3>Planilla</h3>
+        <p class="ayuda">Todos los movimientos en un archivo que abre Excel o Google Sheets.</p>
+        <button type="button" id="aj-csv" class="btn">Descargar planilla (.csv)</button>
+      </section>
+
+      <section class="bloque">
+        <h3>Saldo inicial</h3>
+        <p class="ayuda">La plata que tenías al empezar a anotar. Suma al acumulado, no a los ingresos del mes. Dejalo vacío para no usarlo.</p>
+        <form id="aj-form-saldo" class="saldo-inicial" novalidate>
+          <div class="campo">
+            <label for="aj-saldo">Monto</label>
+            <input id="aj-saldo" inputmode="decimal" autocomplete="off" placeholder="0">
+          </div>
+          <div class="campo">
+            <label for="aj-saldo-mes">Al empezar el mes</label>
+            <input type="month" id="aj-saldo-mes" placeholder="AAAA-MM">
+          </div>
+          <button type="submit" class="btn">Guardar saldo</button>
+        </form>
+        <p class="ayuda estado" id="aj-saldo-estado" role="status"></p>
+      </section>
+
+      <section class="bloque">
+        <h3>Categorías</h3>
+        <div class="segmento chico" role="radiogroup" aria-label="Categorías de" id="aj-tipo">
+          <button type="button" role="radio" data-tipo="gasto">Gastos</button>
+          <button type="button" role="radio" data-tipo="ingreso">Ingresos</button>
+        </div>
+        <ul id="aj-cats" class="lista-cats"></ul>
+        <form id="aj-form-cat" class="agregar-cat">
+          <input id="aj-nueva-cat" maxlength="30" autocomplete="off" placeholder="Nueva categoría (podés empezar con un emoji)" aria-label="Nueva categoría">
+          <button type="submit" class="btn">Agregar</button>
+        </form>
+      </section>
+
+      <section class="bloque">
+        <h3>Borrar todo</h3>
+        <p class="ayuda">Elimina todos los movimientos de este celular. No se puede deshacer.</p>
+        <button type="button" id="aj-borrar" class="btn peligro">Borrar todos los datos</button>
+      </section>
+
+      <p class="version" id="aj-version"></p>
+    </div>
+  </dialog>
+
+  <div id="aviso-flotante" class="aviso-flotante" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
