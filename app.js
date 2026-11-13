@@ -1,6 +1,6 @@
 'use strict';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const CLAVE = 'mis-cuentas:v1';
 
 const CATEGORIAS_BASE = {
@@ -42,6 +42,8 @@ const fmtDecimal = new Intl.NumberFormat('es-AR', {
 });
 const moneda = (n) => (Number.isInteger(redondear(n)) ? fmtEntero : fmtDecimal).format(redondear(n));
 const monedaRedonda = (n) => fmtEntero.format(Math.round(n));
+const fmtPct = new Intl.NumberFormat('es-AR', { maximumFractionDigits: 1 });
+const porcentaje = (n) => `${fmtPct.format(n)}%`;
 
 /* ---------- Datos ---------- */
 
@@ -67,10 +69,28 @@ function normalizarSaldoInicial(s) {
     : null;
 }
 
+// Porcentaje de los ingresos del mes que se aparta apenas se cobra.
+function normalizarResguardo(v) {
+  return Number.isFinite(v) && v > 0 && v <= 50 ? redondear(v) : null;
+}
+
+// Tope mensual por categoría de gasto: { '🍔 Comida afuera': 120000, ... }
+function normalizarTopes(t) {
+  const topes = {};
+  if (t && typeof t === 'object' && !Array.isArray(t)) {
+    for (const [cat, monto] of Object.entries(t)) {
+      if (cat.trim() && Number.isFinite(monto) && monto > 0) topes[cat] = redondear(monto);
+    }
+  }
+  return topes;
+}
+
 function normalizar(d) {
   return {
     movimientos: Array.isArray(d.movimientos) ? d.movimientos.filter(esMovimientoValido) : [],
     saldoInicial: normalizarSaldoInicial(d.saldoInicial),
+    resguardo: normalizarResguardo(d.resguardo),
+    topes: normalizarTopes(d.topes),
     categorias: {
       gasto: listaDeTextos(d.categorias?.gasto) ?? [...CATEGORIAS_BASE.gasto],
       ingreso: listaDeTextos(d.categorias?.ingreso) ?? [...CATEGORIAS_BASE.ingreso],
@@ -202,6 +222,53 @@ function fijosPendientes(mes) {
   return anterior.filter((m) => !series.has(m.serie));
 }
 
+// Lo que queda para gastar en el mes después de apartar el resguardo. Los fijos del mes pasado que todavía
+// no se cargaron cuentan igual (salvo que se haya tocado «Ahora no»), para que a principio de mes el
+// disponible no se vea inflado por el alquiler o el sueldo que todavía no se anotaron.
+function planDelMes(mes) {
+  const t = totales(movimientosDelMes(mes));
+  const p = totales(datos.fijosDescartados.includes(mes) ? [] : fijosPendientes(mes));
+  const ingresos = redondear(t.ingresos + p.ingresos);
+  const gastos = redondear(t.gastos + p.gastos);
+  const resguardo = redondear((ingresos * (datos.resguardo ?? 0)) / 100);
+  return { ingresos, gastos, fijosSinCargar: p.gastos, resguardo, disponible: redondear(ingresos - resguardo - gastos) };
+}
+
+function gastoPorCategoria(mes) {
+  const gastado = new Map();
+  for (const m of movimientosDelMes(mes)) {
+    if (m.tipo === 'gasto') gastado.set(m.categoria, redondear((gastado.get(m.categoria) ?? 0) + m.monto));
+  }
+  return gastado;
+}
+
+function categoriasExcedidas(mes) {
+  const gastado = gastoPorCategoria(mes);
+  return Object.keys(datos.topes).filter((cat) => (gastado.get(cat) ?? 0) > datos.topes[cat]);
+}
+
+const pctResguardado = (t) => (t.ingresos > 0 ? (t.saldo / t.ingresos) * 100 : null);
+
+// Base de la sugerida: lo que sobró en los últimos meses completos (hasta 3), ponderado por lo que entró.
+function resguardoEstimado() {
+  const meses = [];
+  for (let mes = moverMes(mesActual(), -1), i = 0; i < 12 && meses.length < 3; mes = moverMes(mes, -1), i++) {
+    const t = totales(movimientosDelMes(mes));
+    if (t.ingresos > 0) meses.push({ mes, ...t, pct: pctResguardado(t) });
+  }
+  if (!meses.length) return null;
+  const ingresos = meses.reduce((s, m) => s + m.ingresos, 0);
+  const saldo = meses.reduce((s, m) => s + m.saldo, 0);
+  return { meses, pct: (saldo / ingresos) * 100 };
+}
+
+function claseResguardo(pct) {
+  if (pct === null) return '';
+  if (pct < 0) return 'gas';
+  if (!datos.resguardo) return '';
+  return pct >= datos.resguardo ? 'ing' : 'alerta-txt';
+}
+
 function parsearMonto(texto) {
   let s = String(texto).replace(/[\s$]/g, '');
   if (!s) return Number.NaN;
@@ -299,6 +366,9 @@ function formatearAlEscribir(input) {
 function partirCategoria(cat) {
   const m = cat.match(/^(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*)\s*(.*)$/u);
   if (m) return { icono: m[1], nombre: m[2] || cat };
+  // También se acepta el emoji al final («Helados🍦»).
+  const f = cat.match(/^(.*?)\s*(\p{Extended_Pictographic}(?:️|‍\p{Extended_Pictographic})*)$/u);
+  if (f && f[1]) return { icono: f[2], nombre: f[1] };
   return { icono: cat.trim().charAt(0).toUpperCase() || '•', nombre: cat };
 }
 
@@ -323,18 +393,28 @@ function renderResumen(movs) {
   const mostrarAcumulado = (si && ui.mes >= si.mes) || datos.movimientos.some((m) => m.fecha < `${ui.mes}-01`);
   const anterior = arrastre(ui.mes);
 
+  const meta = datos.resguardo;
   let medidor = '';
   if (t.ingresos > 0) {
     const pct = Math.round((t.gastos / t.ingresos) * 100);
-    const clase = pct > 100 ? 'excede' : pct >= 90 ? 'alerta' : '';
+    const limite = meta ? 100 - meta : 90;
+    const clase = pct > 100 ? 'excede' : pct > limite || (!meta && pct >= 90) ? 'alerta' : '';
     const texto =
       pct > 100
         ? `Gastaste ${moneda(t.gastos - t.ingresos)} más de lo que entró`
         : `Gastaste el ${pct}% de lo que entró`;
+    const marca = meta ? `<i class="marca" style="left:${100 - meta}%"></i>` : '';
+    let real = '';
+    if (ui.mes < mesActual()) {
+      const pr = pctResguardado(t);
+      const cumplio = meta ? (pr >= meta ? ` · cumpliste la meta del ${porcentaje(meta)}` : ` · la meta era ${porcentaje(meta)}`) : '';
+      real = `<p class="etq">Te quedó el <strong class="${claseResguardo(pr)}">${porcentaje(pr)}</strong> de lo que entró${cumplio}</p>`;
+    }
     medidor = `
       <div class="medidor">
-        <div class="medidor-barra"><span class="${clase}" style="width:${Math.min(pct, 100)}%"></span></div>
+        <div class="medidor-barra"><span class="${clase}" style="width:${Math.min(pct, 100)}%"></span>${marca}</div>
         <p class="etq">${texto}</p>
+        ${real}
       </div>`;
   }
 
@@ -346,6 +426,7 @@ function renderResumen(movs) {
       <div><span class="etq">Gastos</span><strong class="gas">${moneda(t.gastos)}</strong></div>
     </div>
     ${medidor}
+    ${ui.mes === mesActual() ? bloquePlan() : ''}
     ${
       mostrarAcumulado
         ? `<div class="acum">
@@ -354,6 +435,42 @@ function renderResumen(movs) {
           </div>`
         : ''
     }`;
+}
+
+function bloquePlan() {
+  const p = planDelMes(ui.mes);
+  const meta = datos.resguardo;
+  if (p.ingresos <= 0) {
+    return `<div class="plan"><p class="etq">Cuando cargues lo que te entra este mes te muestro cuánto podés gastar por día${meta ? ' después de apartar el resguardo' : ''}.</p></div>`;
+  }
+
+  const quedanDias = diasDelMes(ui.mes) - Number(hoyISO().slice(8, 10)) + 1;
+  const filas = [
+    meta
+      ? `<div class="plan-fila"><span>Resguardo ${porcentaje(meta)}</span><strong>${moneda(p.resguardo)}</strong></div>`
+      : `<div class="plan-fila"><span>Resguardo</span><button type="button" class="enlace" data-accion="fijar-resguardo">Fijar un %</button></div>`,
+  ];
+  if (p.fijosSinCargar > 0) {
+    filas.push(`<div class="plan-fila"><span>Fijos sin cargar</span><strong>${moneda(p.fijosSinCargar)}</strong></div>`);
+  }
+  if (p.disponible >= 0) {
+    filas.push(`
+      <div class="plan-fila total"><span>Te quedan para gastar</span><strong>${moneda(p.disponible)}</strong></div>
+      <p class="etq"><strong>${monedaRedonda(p.disponible / quedanDias)} por día</strong> · ${quedanDias === 1 ? 'último día del mes' : `quedan ${quedanDias} días`}</p>`);
+  } else {
+    const delResguardo = meta && -p.disponible <= p.resguardo;
+    filas.push(`<div class="plan-fila total neg"><span>${delResguardo ? 'Usaste del resguardo' : 'Te pasaste del plan'}</span><strong>${moneda(-p.disponible)}</strong></div>`);
+  }
+
+  const excedidas = categoriasExcedidas(ui.mes);
+  if (excedidas.length) {
+    const texto =
+      excedidas.length === 1
+        ? `${esc(partirCategoria(excedidas[0]).nombre)} pasó su tope`
+        : `${excedidas.length} categorías pasaron su tope`;
+    filas.push(`<button type="button" class="enlace alerta-txt" data-accion="ver-topes">${texto} ›</button>`);
+  }
+  return `<div class="plan">${filas.join('')}</div>`;
 }
 
 function renderAvisos() {
@@ -478,30 +595,53 @@ function renderCategorias(movs) {
     g.cantidad += 1;
     grupos.set(m.categoria, g);
   }
+  // Las categorías con tope se muestran aunque todavía no tengan gastos: así se ve cuánto hay para gastar.
+  const topes = tipo === 'gasto' ? datos.topes : {};
+  for (const cat of Object.keys(topes)) {
+    if (!grupos.has(cat) && datos.categorias.gasto.includes(cat)) grupos.set(cat, { total: 0, cantidad: 0 });
+  }
   const filas = [...grupos].map(([categoria, g]) => ({ categoria, ...g })).sort((a, b) => b.total - a.total);
-  const maximo = filas[0]?.total ?? 0;
+  const maximo = filas[0]?.total || 1;
 
   const selector = `
     <div class="segmento" role="radiogroup" aria-label="Ver categorías de">
       <button type="button" role="radio" data-accion="tipo-categorias" data-tipo="gasto" aria-checked="${tipo === 'gasto'}">Gastos</button>
       <button type="button" role="radio" data-accion="tipo-categorias" data-tipo="ingreso" aria-checked="${tipo === 'ingreso'}">Ingresos</button>
     </div>`;
+  const botonTopes =
+    tipo === 'gasto'
+      ? `<button type="button" class="btn ancho" data-accion="editar-topes">${Object.keys(datos.topes).length ? 'Cambiar los topes por categoría' : 'Poner topes por categoría'}</button>`
+      : '';
 
   if (!filas.length) {
-    $('#vista').innerHTML = `${selector}<div class="vacio">No hay ${tipo === 'gasto' ? 'gastos' : 'ingresos'} en ${esc(nombreMes(ui.mes))}.</div>`;
+    $('#vista').innerHTML = `${selector}<div class="vacio">No hay ${tipo === 'gasto' ? 'gastos' : 'ingresos'} en ${esc(nombreMes(ui.mes))}.</div>${botonTopes}`;
     return;
   }
 
   const items = filas
     .map((f) => {
       const { icono, nombre } = partirCategoria(f.categoria);
-      const pct = total ? Math.round((f.total / total) * 100) : 0;
+      const cantidad = `${f.cantidad} ${f.cantidad === 1 ? 'movimiento' : 'movimientos'}`;
+      const tope = topes[f.categoria];
+      let detalle, monto, barra;
+      if (tope) {
+        const resto = redondear(tope - f.total);
+        const uso = f.total / tope;
+        const clase = uso > 1 ? 'excede' : uso >= 0.9 ? 'alerta' : '';
+        detalle = resto >= 0 ? `Quedan ${moneda(resto)}` : `<span class="gas">Te pasaste ${moneda(-resto)}</span>`;
+        monto = `${moneda(f.total)}<small>de ${monedaRedonda(tope)}</small>`;
+        barra = `<span class="cat-barra tope ${clase}" aria-hidden="true"><span style="width:${Math.min(uso, 1) * 100}%"></span></span>`;
+      } else {
+        detalle = cantidad;
+        monto = `${moneda(f.total)}<small>${total ? Math.round((f.total / total) * 100) : 0}%</small>`;
+        barra = `<span class="cat-barra ${tipo}" aria-hidden="true"><span style="width:${(f.total / maximo) * 100}%"></span></span>`;
+      }
       return `
         <li><button type="button" class="cat" data-categoria="${esc(f.categoria)}" data-tipo="${tipo}">
           <span class="ico" aria-hidden="true">${esc(icono)}</span>
-          <span class="txt"><span class="t1">${esc(nombre)}</span><span class="t2">${f.cantidad} ${f.cantidad === 1 ? 'movimiento' : 'movimientos'}</span></span>
-          <span class="monto">${moneda(f.total)}<small>${pct}%</small></span>
-          <span class="cat-barra ${tipo}" aria-hidden="true"><span style="width:${(f.total / maximo) * 100}%"></span></span>
+          <span class="txt"><span class="t1">${esc(nombre)}</span><span class="t2">${detalle}</span></span>
+          <span class="monto">${monto}</span>
+          ${barra}
         </button></li>`;
     })
     .join('');
@@ -510,7 +650,8 @@ function renderCategorias(movs) {
     ${selector}
     <div class="cat-total"><span>Total de ${tipo === 'gasto' ? 'gastos' : 'ingresos'}</span><strong class="num">${moneda(total)}</strong></div>
     <ul class="lista tarjeta">${items}</ul>
-    <p class="nota-tabla">Tocá una categoría para ver sus movimientos.</p>`;
+    <p class="nota-tabla">Tocá una categoría para ver sus movimientos.${tipo === 'gasto' && Object.keys(datos.topes).length ? ' Las que tienen tope muestran cuánto te queda en el mes.' : ''}</p>
+    ${botonTopes}`;
 }
 
 function renderMeses() {
@@ -529,6 +670,10 @@ function renderMeses() {
   const filas = meses.map((mes) => ({ mes, movs: movimientosDelMes(mes) })).map((f) => ({ ...f, t: totales(f.movs) }));
   const conDatos = filas.filter((f) => f.movs.length);
 
+  const conPct = (t) => {
+    const pct = pctResguardado(t);
+    return pct === null ? '' : `<small class="${claseResguardo(pct)}">${porcentaje(pct)}</small>`;
+  };
   const cuerpo = filas
     .map(
       ({ mes, t, movs }) => `
@@ -536,7 +681,7 @@ function renderMeses() {
         <td>${esc(nombreMes(mes, true))}</td>
         <td class="ing">${movs.length ? monedaRedonda(t.ingresos) : '–'}</td>
         <td class="gas">${movs.length ? monedaRedonda(t.gastos) : '–'}</td>
-        <td class="${t.saldo < 0 ? 'gas' : ''}">${movs.length ? monedaRedonda(t.saldo) : '–'}</td>
+        <td class="${t.saldo < 0 ? 'gas' : ''}">${movs.length ? monedaRedonda(t.saldo) : '–'}${movs.length ? conPct(t) : ''}</td>
       </tr>`,
     )
     .join('');
@@ -553,7 +698,7 @@ function renderMeses() {
         <td>Promedio</td>
         <td>${monedaRedonda(suma.ingresos / n)}</td>
         <td>${monedaRedonda(suma.gastos / n)}</td>
-        <td>${monedaRedonda((suma.ingresos - suma.gastos) / n)}</td>
+        <td>${monedaRedonda((suma.ingresos - suma.gastos) / n)}${conPct({ ingresos: suma.ingresos, saldo: suma.ingresos - suma.gastos })}</td>
       </tr></tfoot>`;
   }
 
@@ -565,7 +710,7 @@ function renderMeses() {
         ${pie}
       </table>
     </div>
-    <p class="nota-tabla">Últimos 12 meses${conDatos.length > 1 ? `. El promedio usa los ${conDatos.length} meses con movimientos` : ''}. Tocá un mes para verlo.</p>`;
+    <p class="nota-tabla">Últimos 12 meses${conDatos.length > 1 ? `. El promedio usa los ${conDatos.length} meses con movimientos` : ''}. Debajo del saldo, qué parte de lo que entró te quedó${datos.resguardo ? ` (meta: ${porcentaje(datos.resguardo)})` : ''}. Tocá un mes para verlo.</p>`;
 }
 
 /* ---------- Hojas (diálogos) ---------- */
@@ -708,7 +853,14 @@ $('#form-mov').addEventListener('submit', (e) => {
   ui.mes = fecha.slice(0, 7);
   hojaMov.close();
   render();
-  avisar(m ? 'Cambios guardados' : formMov.tipo === 'gasto' ? 'Gasto anotado' : 'Ingreso anotado');
+  let mensaje = m ? 'Cambios guardados' : formMov.tipo === 'gasto' ? 'Gasto anotado' : 'Ingreso anotado';
+  const tope = formMov.tipo === 'gasto' ? datos.topes[formMov.categoria] : null;
+  if (tope) {
+    const resto = redondear(tope - (gastoPorCategoria(ui.mes).get(formMov.categoria) ?? 0));
+    const nombre = partirCategoria(formMov.categoria).nombre;
+    mensaje += resto >= 0 ? `. ${nombre}: te quedan ${moneda(resto)}` : `. ${nombre}: te pasaste ${moneda(-resto)}`;
+  }
+  avisar(mensaje);
 });
 
 $('#mov-eliminar').addEventListener('click', () => {
@@ -755,15 +907,115 @@ function cargarFijos() {
   avisar(`Se cargaron ${pendientes.length}. Si algún monto cambió, tocalo para editarlo.`);
 }
 
+/* ---------- Topes por categoría ---------- */
+
+const hojaTopes = $('#hoja-topes');
+
+function abrirTopes() {
+  const anterior = moverMes(ui.mes, -1);
+  const gastado = gastoPorCategoria(anterior);
+  $('#topes-ayuda-mes').textContent = nombreMes(anterior);
+  $('#topes-lista').innerHTML = datos.categorias.gasto
+    .map((c, i) => {
+      const { icono, nombre } = partirCategoria(c);
+      const previo = gastado.get(c);
+      return `
+        <li>
+          <span class="ico" aria-hidden="true">${esc(icono)}</span>
+          <label class="txt" for="tope-${i}">
+            <span class="t1">${esc(nombre)}</span>
+            <span class="t2">${previo ? `Gastaste ${monedaRedonda(previo)}` : 'Sin gastos'}</span>
+          </label>
+          <input id="tope-${i}" data-tope="${esc(c)}" inputmode="decimal" autocomplete="off" placeholder="Sin tope" value="${datos.topes[c] ? textoMonto(datos.topes[c]) : ''}">
+        </li>`;
+    })
+    .join('');
+  for (const input of document.querySelectorAll('#topes-lista input')) formatearAlEscribir(input);
+  $('#topes-error').textContent = '';
+  abrirHoja(hojaTopes);
+}
+
+$('#form-topes').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const topes = {};
+  for (const input of document.querySelectorAll('#topes-lista input')) {
+    if (!input.value.trim()) continue;
+    const monto = parsearMonto(input.value);
+    if (!(monto > 0)) {
+      $('#topes-error').textContent = `Revisá el tope de ${partirCategoria(input.dataset.tope).nombre}, o dejalo vacío.`;
+      input.focus();
+      return;
+    }
+    topes[input.dataset.tope] = monto;
+  }
+  datos.topes = topes;
+  guardar();
+  hojaTopes.close();
+  render();
+  const n = Object.keys(topes).length;
+  avisar(n ? `${n} ${n === 1 ? 'tope guardado' : 'topes guardados'}` : 'Se quitaron los topes');
+});
+
 /* ---------- Ajustes ---------- */
 
 const hojaAjustes = $('#hoja-ajustes');
 
 function abrirAjustes() {
   pintarAjustes();
+  pintarResguardo();
   pintarSaldoInicial();
   abrirHoja(hojaAjustes);
 }
+
+function pintarResguardo(estado = '') {
+  $('#aj-resguardo').value = datos.resguardo ? fmtPct.format(datos.resguardo) : '';
+  $('#aj-resguardo-estado').textContent = estado;
+
+  const est = resguardoEstimado();
+  if (!est) {
+    $('#aj-sugerido').innerHTML = '<p class="ayuda">Cuando tengas un mes completo cargado te sugiero un porcentaje según lo que te sobró.</p>';
+    return;
+  }
+  const sugerido = Math.floor(est.pct);
+  const unMes = est.meses.length === 1;
+  const detalle = unMes
+    ? ''
+    : `<ul class="lista-pct">${est.meses
+        .map((m) => `<li><span>${esc(nombreMes(m.mes))}</span><strong class="${claseResguardo(m.pct)}">${porcentaje(m.pct)}</strong></li>`)
+        .join('')}</ul>`;
+  $('#aj-sugerido').innerHTML = `
+    <p class="ayuda">${unMes ? `En ${esc(nombreMes(est.meses[0].mes))} te quedó` : `En los últimos ${est.meses.length} meses te quedó en promedio`} el <strong>${porcentaje(est.pct)}</strong> de lo que entró.${sugerido >= 1 ? ' Si hubo ingresos que no se repiten (un regalo, un bono), poné un poco menos.' : ''}</p>
+    ${detalle}
+    ${
+      sugerido >= 1
+        ? `<button type="button" class="btn" data-usar-resguardo="${sugerido}">Usar ${sugerido}%</button>`
+        : '<p class="ayuda">Hoy no te está sobrando plata: empezá poniendo topes en las categorías donde más se te va.</p>'
+    }`;
+}
+
+function guardarResguardo(pct) {
+  datos.resguardo = pct;
+  guardar();
+  render();
+  pintarResguardo(pct ? 'Guardado. Separalo apenas cobres.' : 'Resguardo quitado.');
+}
+
+$('#aj-form-resguardo').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const texto = $('#aj-resguardo').value.replace('%', '').trim();
+  if (!texto) return guardarResguardo(null);
+  const pct = parsearMonto(texto);
+  if (!(pct > 0 && pct <= 50)) {
+    $('#aj-resguardo-estado').textContent = 'Poné un porcentaje mayor a 0 y hasta 50, o dejalo vacío para no usarlo.';
+    return;
+  }
+  guardarResguardo(pct);
+});
+
+$('#aj-sugerido').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-usar-resguardo]');
+  if (b) guardarResguardo(Number(b.dataset.usarResguardo));
+});
 
 function pintarSaldoInicial(estado = '') {
   const si = datos.saldoInicial;
@@ -893,6 +1145,8 @@ async function exportarCopia() {
     movimientos: datos.movimientos,
     saldoInicial: datos.saldoInicial,
     categorias: datos.categorias,
+    resguardo: datos.resguardo,
+    topes: datos.topes,
   };
   const ok = await entregarArchivo(`mis-cuentas-${hoyISO()}.json`, JSON.stringify(copia, null, 1), 'application/json');
   if (!ok) return;
@@ -1018,7 +1272,7 @@ function avisar(mensaje, boton) {
   }
   el.classList.add('visible');
   clearTimeout(temporizadorAviso);
-  temporizadorAviso = setTimeout(() => el.classList.remove('visible'), boton ? 5000 : 2600);
+  temporizadorAviso = setTimeout(() => el.classList.remove('visible'), boton || mensaje.length > 40 ? 5000 : 2600);
 }
 
 /* ---------- Eventos de la pantalla principal ---------- */
@@ -1075,10 +1329,25 @@ document.querySelector('main').addEventListener('click', (e) => {
     case 'cargar-fijos':
       cargarFijos();
       break;
+    case 'fijar-resguardo':
+      abrirAjustes();
+      $('#aj-bloque-resguardo').scrollIntoView({ block: 'start' });
+      $('#aj-resguardo').focus({ preventScroll: true });
+      break;
+    case 'ver-topes':
+      ui.tab = 'categorias';
+      ui.tipoCategorias = 'gasto';
+      ui.filtro = null;
+      render();
+      $('.pestanias').scrollIntoView({ block: 'start', behavior: 'smooth' });
+      break;
+    case 'editar-topes':
+      abrirTopes();
+      break;
     case 'descartar-fijos':
       datos.fijosDescartados.push(ui.mes);
       guardar();
-      renderAvisos();
+      render(); // el plan del mes dejaba de contar esos fijos
       break;
     case 'exportar':
       exportarCopia();

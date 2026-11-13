@@ -110,6 +110,20 @@
         <button type="button" id="aj-instalar-btn" class="btn primario" hidden>Instalar Mis Cuentas</button>
       </section>
 
+      <section class="bloque" id="aj-bloque-resguardo">
+        <h3>Resguardo mensual</h3>
+        <p class="ayuda">La parte de lo que te entra que separás apenas cobrás y no se toca. Arriba te muestro cuánto te queda por día después de apartarla. No la cargues como gasto: es plata tuya que cambia de lugar.</p>
+        <form id="aj-form-resguardo" class="form-resguardo" novalidate>
+          <div class="campo">
+            <label for="aj-resguardo">% de lo que entra en el mes</label>
+            <input id="aj-resguardo" inputmode="decimal" autocomplete="off" placeholder="Ej: 8">
+          </div>
+          <button type="submit" class="btn">Guardar</button>
+        </form>
+        <p class="ayuda estado" id="aj-resguardo-estado" role="status"></p>
+        <div id="aj-sugerido" class="sugerido"></div>
+      </section>
+
       <section class="bloque">
         <h3>Copia de seguridad</h3>
         <p class="ayuda">Tus datos se guardan solo en este celular. Exportá una copia cada tanto (mandátela por WhatsApp o guardala en Drive) para no perderlos si cambiás de teléfono o borrás los datos del navegador.</p>
@@ -165,6 +179,26 @@
 
       <p class="version" id="aj-version"></p>
     </div>
+  </dialog>
+
+  <dialog id="hoja-topes" class="hoja" aria-labelledby="topes-titulo">
+    <form id="form-topes" class="hoja-cuerpo" novalidate>
+      <div class="hoja-asa" aria-hidden="true"></div>
+      <div class="hoja-cabecera">
+        <h2 id="topes-titulo">Topes por mes</h2>
+        <button type="button" class="icono" data-cerrar aria-label="Cerrar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <p class="ayuda">Lo máximo que querés gastar por mes en cada categoría. Dejá vacías las que no quieras controlar. Debajo de cada una, lo que gastaste en <span id="topes-ayuda-mes"></span>.</p>
+      <ul id="topes-lista" class="lista-topes"></ul>
+      <p id="topes-error" class="error" role="alert"></p>
+      <div class="acciones fijas">
+        <span class="espacio"></span>
+        <button type="button" class="btn" data-cerrar>Cancelar</button>
+        <button type="submit" class="btn primario">Guardar</button>
+      </div>
+    </form>
   </dialog>
 
   <div id="aviso-flotante" class="aviso-flotante" role="status" aria-live="polite"></div>

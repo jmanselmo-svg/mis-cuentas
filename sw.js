@@ -1,5 +1,5 @@
 // Cambiar la versión al publicar cambios hace que el celular descarte la caché vieja.
-const CACHE = 'mis-cuentas-v2';
+const CACHE = 'mis-cuentas-v3';
 
 const ARCHIVOS = [
   './',
